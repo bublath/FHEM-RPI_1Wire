@@ -74,12 +74,13 @@ sub RPI_1Wire_Notify {
 
 sub RPI_1Wire_Define {			#
 	my ($hash, $def) = @_;
-	Log3 $hash->{NAME}, 1, $hash->{NAME}." Define: $def";
+	Log3 $hash->{NAME}, 2, $hash->{NAME}." Define: $def";
 	$hash->{setList}	= {
 		"update" => "noArg",
 		"scan" => "noArg",
 		"precision" => "9,10,11,12",
 		"conv_time" => "textField",
+		"therm_bulk_read" => "on,off",
 	};
 	$hash->{getList}= {
 		"udev"      => "noArg",
@@ -87,7 +88,7 @@ sub RPI_1Wire_Define {			#
 	
 	$hash->{NOTIFYDEV} = "global";
 		if ($init_done) {
-			Log3 $hash->{NAME}, 1, "Define init_done: $def";
+			Log3 $hash->{NAME}, 2, "Define init_done: $def";
 			my $ret=RPI_1Wire_Init($hash,$hash->{NAME}." ".$hash->{TYPE}." ".$hash->{DEF});
 			return $ret if $ret;
 	}
@@ -96,10 +97,10 @@ sub RPI_1Wire_Define {			#
 ################################### 
 sub RPI_1Wire_Init {				#
 	my ( $hash, $args ) = @_;
-	Log3 $hash->{NAME}, 5, $hash->{NAME}.": Init: $args";
+	Log3 $hash->{NAME}, 2, $hash->{NAME}.": Init: $args";
 	if (! -e "$w1_path") {
 		$hash->{STATE} ="No 1-Wire Bus found";
-		Log3 $hash->{NAME}, 1, $hash->{NAME}.": Init: $hash->{STATE}";
+		Log3 $hash->{NAME}, 3, $hash->{NAME}.": Init: $hash->{STATE}";
 		return $hash->{STATE};
 	}
 
@@ -138,9 +139,22 @@ sub RPI_1Wire_Init {				#
 	#remove set commands that make no sense
 	if ($device ne "BUSMASTER") {
 		delete($hash->{setList}{scan});
+		delete($hash->{setList}{therm_bulk_read});
 		RPI_1Wire_DeviceUpdate($hash);
 	} else {
-		delete($hash->{setList}{update});
+		my $bulk=$hash->{bulk_read};
+		if (!defined $bulk) {
+			$hash->{bulk_read}="off";
+			$bulk="off";
+		}
+		if (! -w "$w1_path/therm_bulk_read") {
+			delete($hash->{setList}{therm_bulk_read});
+			delete($hash->{setList}{update});
+			$hash->{bulk_read}="off";
+		} elsif ($bulk eq "on") {
+			$hash->{setList}{update}="noArg"; #Restore set command in case it was deleted previously
+			RPI_1Wire_DeviceUpdate($hash);
+		}
 	}
 	if ($type ne "temperature") {
 		delete($hash->{setList}{precision});
@@ -163,17 +177,17 @@ sub RPI_1Wire_Init {				#
 		RPI_1Wire_SetPrecision($hash,$precision);
 	}
 	if (defined $conv_time) {
-		RPI_1Wire_SetPrecision($hash,$conv_time);
+		RPI_1Wire_SetConversion($hash,$conv_time);
 	}
 	RPI_1Wire_GetConfig($hash);
 	$hash->{STATE} = "Initialized";
-	Log3 $hash->{NAME}, 5, $hash->{NAME}.": Init done for $device $family $id $type";
+	Log3 $hash->{NAME}, 3, $hash->{NAME}.": Init done for $device $family $id $type";
 	return;
 }
 
 sub RPI_1Wire_GetDevices {
 	my ($hash) = @_;
-	Log3 $hash->{NAME}, 4 , $hash->{NAME}.": GetDevices";
+	Log3 $hash->{NAME}, 3 , $hash->{NAME}.": GetDevices";
 	my @devices;
 	if (open(my $fh, "<", "$w1_path/w1_master_slaves")) {
 		while (my $device = <$fh>) {
@@ -186,7 +200,7 @@ sub RPI_1Wire_GetDevices {
 			if ($found == 0) {
 				my ($family, $id) = split('-',$device);
 				if (defined $RPI_1Wire_Devices{$family}) { #only autocreate for known devices
-					Log3 $hash->{NAME}, 5 , $hash->{NAME}.": Autocreate $device";
+					Log3 $hash->{NAME}, 4 , $hash->{NAME}.": Autocreate $device";
 					DoTrigger("global", "UNDEFINED ".$RPI_1Wire_Devices{$family}{name}."_$id RPI_1Wire $device"); #autocreate
 				}
 			}
@@ -205,10 +219,17 @@ sub RPI_1Wire_DeviceUpdate {
 		return RPI_1Wire_Init($hash,$name." ".$hash->{TYPE}." ".$hash->{DEF});
 	}
 	my $pollingInterval = AttrVal($name,"pollingInterval",60);
-	Log3 $name, 5 , $name.": DeviceUpdate($hash->{NAME}), pollingInterval:$pollingInterval";
+	Log3 $name, 4 , $name.": DeviceUpdate($hash->{NAME}), pollingInterval:$pollingInterval";
 #	RPI_1Wire_Poll($hash);
 	#Einfach "delete?" oder eventuell "kill" auf hängenden Prozess?
 	my $mode=AttrVal($name,"mode","nonblocking");
+	if ($family eq "BUSMASTER") {
+		if ($hash->{bulk_read} eq "on") {
+			$mode="bulk_read";
+		} else {
+			return; #once set to "off" the timer won't be started again by exiting here
+		}
+	}
 	if ($mode eq "nonblocking") {
 		delete($hash->{helper}{RUNNING_PID}) if(exists($hash->{helper}{RUNNING_PID}));
 		$hash->{helper}{RUNNING_PID} = BlockingCall("RPI_1Wire_Poll", $hash,"RPI_1Wire_FinishFn");
@@ -224,10 +245,21 @@ sub RPI_1Wire_DeviceUpdate {
 		#Table of reasonable conv_times?
 		InternalTimer(gettimeofday()+1.5, "RPI_1Wire_FromTimer", $hash, 0);
 		return;
+	} elsif ($mode eq "bulk_read") {
+		$hash->{helper}{RUNNING_PID} = BlockingCall("RPI_1Wire_TriggerBulk", $hash,undef);
+		Log3 $hash->{NAME}, 3, $hash->{NAME}.": Triggered bulk read";
 	}
 	RemoveInternalTimer($hash);
 	InternalTimer(gettimeofday()+$pollingInterval, "RPI_1Wire_DeviceUpdate", $hash, 0);
 	return;
+}
+
+sub RPI_1Wire_TriggerBulk {
+	my $path="$w1_path/therm_bulk_read";
+	if (open(my $fh, ">", $path)) {
+		print $fh "trigger\n";
+		close($fh);
+	}
 }
 
 sub RPI_1Wire_FromTimer {
@@ -310,6 +342,13 @@ sub RPI_1Wire_Set {
 		my $ret=RPI_1Wire_SetConversion($hash,$args[0]);
 		return $ret if defined $ret;
 		RPI_1Wire_GetConfig($hash);
+	} elsif ($cmd eq "therm_bulk_read" and @args==1) {
+		if ($args[0] eq "on") {
+			$hash->{bulk_read}="on";
+			return RPI_1Wire_DeviceUpdate($hash);
+		} else {
+			$hash->{bulk_read}="off";
+		}
 	}
 	return;
 }
@@ -318,9 +357,10 @@ sub RPI_1Wire_Get {
 	my ($hash, $name, @args) = @_;
 	return unless defined $hash->{getList};
 	my $family=$hash->{family};
+	return unless defined $family;
 	my $type=$RPI_1Wire_Devices{$family}{type};
 	return unless $type eq "temperature";
-	#return unless $hash->{helper}{write} ne "";
+	return unless $hash->{helper}{write} ne "";
 	my %gets=%{$hash->{getList}};
 	my $numberOfArgs  = int(@args);
 	return "RPI_1Wire_Get: No cmd specified for get" if ( $numberOfArgs < 1 );
@@ -350,6 +390,7 @@ sub RPI_1Wire_Get {
 		
 		my $script= "SUBSYSTEM==\"w1*\", PROGRAM=\"/bin/sh -c \'\\\n";
 		$script .= "chown -R root:gpio /sys/devices/w1*;\\\n";
+		$script .= "chmod g+w /sys/devices/w1_bus_master1/therm_bulk_read;\\\n";
 		$script .= "chmod g+w /sys/devices/w1_bus_master1/*/resolution;\\\n";
 		$script .= "chmod g+w /sys/devices/w1_bus_master1/*/conv_time;\\ \'\"\n";
 		
@@ -402,7 +443,7 @@ sub RPI_1Wire_Poll {
 		$file="$w1_path/$device/$_";
 		if ($family =~ /DHT(11|22)/) { 
 			my $env = RPi::DHT->new($id,$1,1);
-			Log3 $name, 5 , $name.": Using RPi::DHT for $id DHT-$1";
+			Log3 $name, 4 , $name.": Using RPi::DHT for $id DHT-$1";
 			@data=$env->read();
 			last;
 		}
@@ -412,7 +453,7 @@ sub RPI_1Wire_Poll {
 		my $loopcount=0;
 		while ($count==0 && $loopcount<3){
 			if (!open($fh, "<", $file)) {
-				Log3 $name, 4 , $name.": Error opening $file";
+				Log3 $name, 2 , $name.": Error opening $file";
 				return "$retval error=open_device";
 			}
 			while (my $line = <$fh>) {
@@ -428,7 +469,7 @@ sub RPI_1Wire_Poll {
 	}
 	
 	if (scalar(@data) == 0) {
-		Log3 $name, 4 , $name.": No data found in $file"; #not entirely correct since $file only contains the last filename
+		Log3 $name, 2 , $name.": No data found in $file"; #not entirely correct since $file only contains the last filename
 		return "$retval error=empty_data";
 	}
 	
@@ -513,7 +554,7 @@ sub RPI_1Wire_CheckFaultvalues {
 	my @faultvalues = split(" ",AttrVal($hash->{NAME},"faultvalues",""));
 	for (my $i=0; $i < @faultvalues; $i++) {
 		if($val == $faultvalues[$i]) {
-			Log3 $hash->{NAME}, 4, $hash->{NAME}.": Ignoring faultvalue $val";
+			Log3 $hash->{NAME}, 2, $hash->{NAME}.": Ignoring faultvalue $val";
 			return;
 		}
 	}
@@ -589,7 +630,7 @@ sub RPI_1Wire_Detail {
 	my $hash=$defs{$name};
 	my $ret = "";
 	if ($hash->{helper}{write} ne "") {
-		return "Some commands are not available due to missing write permissions to files in $w1_path:<br>$hash->{helper}{write}<br>";
+		return "Some commands are not available due to missing write permissions to files in $w1_path:<br>$hash->{helper}{write}<br>See <b>get udev</b> for help how to resolved this.<br>";
 	}
 	return;
 }
@@ -627,9 +668,10 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 	<b>Define</b>
 	<ul>
 		<code>define &lt;name&gt; RPI_1Wire BUSMASTER|ff-xxxxxxxxxxxx|DHT11-&lt;gpio&gt|DHT22-&lt;gpio&gt</code><br><br>
-		<li>BUSMASTER device has the functionality to autocreate devices on startup or with the "scan" command</li>
+		<li>BUSMASTER device has the functionality to autocreate devices on startup or with the "scan" command<br>
+		Having a BUSMASTER is not required unless you like to use autocreate or the therm_bulk_read feature</li>
 		<li>ff-xxxxxxxxxxxx is the id of a 1-Wire device as shown in sysfs tree where ff is the family. To use 1-Wire sensors call "sudo raspi-config" and enable the "1-Wire Interface" under "Interface options".</li>
-		<li>DHT11|12-&lt;gpio&gt defines a DHT11 or DHT22 sensor where gpio is the number of the used GPIO. This requires an additional Perl module which can be aquired here: https://github.com/bublath/rpi-dht. Make sure to define the right type, since DHT11 and DHT22 sensors are similar, but require different algorithms to read. Also note that these are not 1-Wire (GPIO4) sensors and should be attached to GPIOs different to 4 and require one GPIO each.</li>
+		<li>DHT11|12-&lt;gpio&gt defines a DHT11 or DHT22 sensor where gpio is the number of the used GPIO. This requires an additional Perl module which can be aquired <a href="https://github.com/bublath/rpi-dht">here</a>. Make sure to define the right type, since DHT11 and DHT22 sensors are similar, but require different algorithms to read. Also note that these are not 1-Wire (GPIO4) sensors and should be attached to GPIOs different to 4 and require one GPIO each.</li>
 		<br>
 	</ul>
 
@@ -648,17 +690,35 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 		<a id="RPI_1Wire-set-precision"></a>
 		Set the precision of the temperature conversion. Only available for temperature sensors and if the "resolution" file in sysfs is writable by the fhem user. See udev how to enable. Changing the precision is resetting conv_time to its default value.<br>
 		Lowering the precision can significantly reduce conversion time.<br>
+		Requires Linux Kernel 5.10+ (Raspbian Buster)  and write permissions to sysfs (see "get udev")<br>
 		</li>
 		<li><b>set conv_time &lt;milliseconds&gt</b><br>
 		<a id="RPI_1Wire-set-conv_time"></a>
 		Set the conversion time of the temperature conversion. When changing the precision, this is always reset to the system default (by the w1_therm driver) and that is the recommended value for most users.<br>
+		Requires Linux Kernel 5.10+ (Raspbian Buster) and write permissions to sysfs (see "get udev")<br>
 		</li>
 		<a id="RPI_1Wire-setignore"></a>
-		<li>There is however a "hack" to avoid fork()ing a nonblocking call, by setting the conv_time to e.g. 2ms (do not use 1ms, this had an unexpected behaviour in my system, setting the conv_time to 576, while setting it to 0 is restoring the default value). By this the read operation to the device will not finish in time before the new value is ready, but exit almost immediately (not blocking fhem). If you now set the "mode" of this device to "timer" it will trigger another read 1.5s later when the result will be ready (and also return immediately). With this timer driven "double read" it is possible to read the values quickly without blocking FHEM.<br>
+		<li>(applies only Linux Kernel 5.10+ (Raspbian Buster)): There is however a "hack" to avoid fork()ing a nonblocking call, by setting the conv_time to e.g. 2ms (do not use 1ms, this had an unexpected behaviour in my system, setting the conv_time to 576, while setting it to 0 is restoring the default value). By this the read operation to the device will not finish in time before the new value is ready, but exit almost immediately (not blocking fhem). If you now set the "mode" of this device to "timer" it will trigger another read 1.5s later when the result will be ready (and also return immediately). With this timer driven "double read" it is possible to read the values quickly without blocking FHEM.<br>
 		This might be useful if you have a lot of devices that you are reading in short sequence and you're low on system memory. The typical "nonblocking" call is temporarily creating a fork() of the current FHEM process, which in worst case can be complete copy of the memory FHEM uses (the OS does some optimizations though and only copies active parts). This can increase the risk of running out of system memory.
 		</li>
+		<li><b>set therm_bulk_read on|off</b><br>
+		<a id="RPI_1Wire-set-therm_bulk_read"></a>
+		Only available for BUSMASTER: Trigger a bulk read (in non-blocking mode) for ALL temperature sensors at once. The next read from the temperature sensors will return immediately, so it will be safe to set them to "blocking" mode, if the pollingInterval for BUSMASTER is smaller than the lowest pollingInterval for all sensors.<br>
+		Requires Linux Kernel 5.10+ (Raspbian Buster) and write permissions to sysfs (see "get udev")<br>
+		<b>Note:</b> There seems to be a Kernel bug, that breaks this feature if there are other 1-Wire devices on GPIO4 than temperature sensors using w1_therm driver.<br>
+		</li>
 	</ul>
-	
+
+	<a id="RPI_1Wire-get"></a>
+	<b>Get</b>
+	<ul>
+		<li><b>udev</b><br>
+		<a id="RPI_1Wire-get-udev"></a>
+		Displays help how to configure udev to make some sysfs files writable for the fhem user. These write permissions are required to use the features conv_time, precision and therm_bulk_read.<br>
+		Just create a udev file with content as described and copy it to /etc/udev/rules.d/ (root required). You might need a reboot to activate.<br>
+		</li>
+	</ul>
+
 	<a id="RPI_1Wire-attr"></a>
 	<b>Attributes</b>
 	<ul>
@@ -684,7 +744,7 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 		<a id="RPI_1Wire-attr-mode"></a>
 			Reading values from the devices is typically blocking the execution of FHEM. In my tests a typical precision 12 temperature reading blocks for about 1s, a counter read for 0.2s and reading voltages about 0.5s.<br>
 			While this sounds minimal there are devices that may depend on timing (e.g. CUL_HM) and can be impacted if FHEM is blocked for so long. As a result this module is by default fork()ing a seperate process that does the read operation in parallel to normal FHEM execution, which should be ok for most users, but can be optimized if desired (see more in "set conv_time" above).<br>
-			Default: nonblocking, valid values: locking,nonblocking,timer<br>
+			Default: nonblocking, valid values: blocking,nonblocking,timer<br>
 		</li>
 		<li><b>faultvalues</b><br>
 		<a id="RPI_1Wire-attr-faultvalues"></a>
@@ -710,8 +770,10 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 		<li>open_device: The device could not be opened. Likely it was disconnected</li>
 		<li><b>conv_time</b></li>
 		Only for temperature: The actual used conversion time (queried from the OS)<br>
+		Requires Linux Kernel 5.10+ (Raspbian Buster)<br>
 		<li><b>precision</b></li>
 		Only for temperature: The actual used precision/resolution (queried from the OS)<br>
+		Requires Linux Kernel 5.10+ (Raspbian Buster)<br>
 		<li><b>temperature</b></li>
 		Temperature reading from the device<br>
 		<li><b>counter.A/counter.B</b></li>
