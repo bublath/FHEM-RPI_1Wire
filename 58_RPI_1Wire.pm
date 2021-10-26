@@ -465,12 +465,10 @@ sub RPI_1Wire_Poll {
 			close ($fh);
 			$loopcount++;
 		}
-		push @data, undef if $count==0; #make sure to get at least an empty line so multi file queries don't get mixed up.
-	}
-	
-	if (scalar(@data) == 0) {
-		Log3 $name, 2 , $name.": No data found in $file"; #not entirely correct since $file only contains the last filename
-		return "$retval error=empty_data";
+		if ($count == 0) {
+			Log3 $name, 2 , $name.": No data found in $file"; 
+			return "$retval error=empty_data";
+		}
 	}
 	
 	if ($type =~ /temperature/) {
@@ -646,7 +644,7 @@ sub RPI_1Wire_Detail {
 
 <h3>RPI_1Wire</h3>
 <a id="RPI_1Wire"></a>
-For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki</a> (TODO)
+For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki</a>
 <ul>
 		provides an interface to devices connected through the standard Raspberry 1-Wire interface (GPIO4) and is aware of the following devices:<br><br>
 		<li>Family 0x10 (DS18S20) temperature</li>
@@ -715,7 +713,7 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 		<li><b>udev</b><br>
 		<a id="RPI_1Wire-get-udev"></a>
 		Displays help how to configure udev to make some sysfs files writable for the fhem user. These write permissions are required to use the features conv_time, precision and therm_bulk_read.<br>
-		Just create a udev file with content as described and copy it to /etc/udev/rules.d/ (root required). You might need a reboot to activate.<br>
+		Just create a udev file with content as described and copy it to /etc/udev/rules.d/ (root required). To activate the rules without a reboot you can use "sudo udevadm control --reload-rules && udevadm trigger". To activate the missing set commands, you will still need to restart FHEM.<br>
 		</li>
 	</ul>
 
@@ -738,7 +736,7 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 		<a id="RPI_1Wire-attr-tempFactor"></a>
 			Only applies to temperature measurements: Value that the measured temperature gets multiplied with to calibrate sensors that are off.<br>
 			In combination with the tempOffset the factor will be applied first, then the offset is added.<br>
-			Default: 0, valid values: float<br>
+			Default: 1.0, valid values: float<br>
 		</li>
 		<li><b>mode blocking|nonblocking|timer</b><br>
 		<a id="RPI_1Wire-attr-mode"></a>
@@ -783,7 +781,7 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 		<li><b>pioa/piob</b></li>
 		Switch states for dual port switches<br>
 		<li><b>pio1 ... pio8</b></li>
-		Switch states for 8 port switches<br>		
+		Switch states for 8 port switches<br>
 	</ul>
 	<br>
 </ul>
