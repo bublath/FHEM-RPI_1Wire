@@ -67,7 +67,7 @@ sub RPI_1Wire_Notify {
 		my $def=$own_hash->{DEF};
 		$def="" if (!defined $def); 
 		#GetDevices is triggering the autocreate calls, but this is not yet working (autocreate not ready?) so delay this by 10 seconds
-		RPI_1Wire_Init($own_hash,$ownName." ".$own_hash->{TYPE}." ".$def);
+		RPI_1Wire_Init($own_hash,$def,0);
 		InternalTimer(gettimeofday()+10, "RPI_1Wire_GetDevices", $own_hash, 0) if $own_hash->{DEF} =~ /BUSMASTER/;
 	}
 }
@@ -89,28 +89,28 @@ sub RPI_1Wire_Define {			#
 	$hash->{NOTIFYDEV} = "global";
 		if ($init_done) {
 			Log3 $hash->{NAME}, 2, "Define init_done: $def";
-			my $ret=RPI_1Wire_Init($hash,$hash->{NAME}." ".$hash->{TYPE}." ".$hash->{DEF});
+			$def =~ s/^\S+\s*\S+\s*//; #Remove devicename and type
+			my $ret=RPI_1Wire_Init($hash,$def,1);
 			return $ret if $ret;
 	}
 	return;
 }
 ################################### 
 sub RPI_1Wire_Init {				#
-	my ( $hash, $args ) = @_;
-	Log3 $hash->{NAME}, 2, $hash->{NAME}.": Init: $args";
+	my ( $hash, $args, $check ) = @_;
+	Log3 $hash->{NAME}, 2, $hash->{NAME}.": Init: $args $check";
 	if (! -e "$w1_path") {
 		$hash->{STATE} ="No 1-Wire Bus found";
 		Log3 $hash->{NAME}, 3, $hash->{NAME}.": Init: $hash->{STATE}";
 		return $hash->{STATE};
 	}
 
-	my @a = ();
-	@a = split("[ \t]+", $args) if defined $args;
-	shift @a;shift @a;
-	my $name = $hash->{NAME};
-	if (defined $args && @a!=1)	{
+	my @a = split("[ \t]+", $args);
+	print @a."\n";
+	if (@a!=1)	{
 		return "syntax: define <name> RPI_1Wire <id>|BUSMASTER|DHT11-<gpio>|DHT22-<gpio>";
 	}
+	my $name = $hash->{NAME};
 	my $arg=$a[0];
 	$hash->{helper}{write}="";
 	$hash->{helper}{duration}=0;
@@ -133,10 +133,7 @@ sub RPI_1Wire_Init {				#
 		$family="DHT".$1;
 		$device=$family;
 	} else {
-		if (! -e "$w1_path/$arg") {
-			readingsSingleUpdate($hash,"failreason","Device not found",0);
-			return "Device $arg does not exist";
-		}
+		return "Device $arg does not exist" if (! -e "$w1_path/$arg" and $check==1); #Only quit if coming from interactive define
 		($family, $id) = split('-',$arg);
 		return "Unknown device family $family" if !defined $RPI_1Wire_Devices{$family};
 		$device=$RPI_1Wire_Devices{$family}{name};
@@ -224,12 +221,12 @@ sub RPI_1Wire_DeviceUpdate {
 	my $family=$hash->{family};
 	if (!defined $family) {
 		#For safety, if a device was not ready during startup it sometimes is not properly initialized when being reconnected
-		return RPI_1Wire_Init($hash,$name." ".$hash->{TYPE}." ".$hash->{DEF});
+		return RPI_1Wire_Init($hash,$hash->{DEF},0);
 	}
 	my $pollingInterval = AttrVal($name,"pollingInterval",60);
+	return if $pollingInterval<1;
 	Log3 $name, 4 , $name.": DeviceUpdate($hash->{NAME}), pollingInterval:$pollingInterval";
-#	RPI_1Wire_Poll($hash);
-	#Einfach "delete?" oder eventuell "kill" auf hängenden Prozess?
+
 	my $mode=AttrVal($name,"mode","nonblocking");
 	if ($family eq "BUSMASTER") {
 		if (ReadingsVal($name,"therm_bulk_read","off") eq "on") {
