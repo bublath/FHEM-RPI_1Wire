@@ -293,13 +293,14 @@ sub RPI_1Wire_Switch {
 	my $fh;
 	my $path="$w1_path/$hash->{DEF}/output";
 	if (open($fh, ">", $path)) {
-		print $fh pack("B8", substr("0" x 8 . $switch, -8));
+		print $fh pack("C",$switch);
 		close($fh);
 	} else {
-		#return "Error writing to $w1_path/$hash->{DEF}/output";
+		return "Error writing to $w1_path/$hash->{DEF}/output";
 	}
 	#After setting switch, read back to set readings correctly
-	RPI_1Wire_Poll($hash);
+	my $ret=RPI_1Wire_Poll($hash);
+	RPI_1Wire_FinishFn($ret);
 	return;
 	
 }
@@ -717,7 +718,7 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 		<li>Family 0x26 (DS2438) a/d converter with temperature support</li>
 		<li>Family 0x28 (DS18B20) temperature</li>
 		<li>Family 0x29 (DS2408) 8 port switch (untested)</li>
-		<li>Family 0x3a (DS2413) adressable 2 port switch (untested)</li>
+		<li>Family 0x3a (DS2413) adressable 2 port switch</li>
 		<li>Family 0x3b (DS1825) temperature</li>
 		<li>Family 0x42 (DS28EA00) temperature</li>
 		<li>DHT11/DHT22 sensors (adressable GPIO) temperature, humidity</li>
@@ -868,6 +869,8 @@ For German documentation see <a href="https://wiki.fhem.de/wiki/RPI_1Wire">Wiki<
 		Voltage readings from the device (DS2438)<br>
 		<li><b>pioa/piob</b></li>
 		Switch states for dual port switches<br>
+		<li><b>latcha/latchb</b></li>
+		Latch states for DS2413. This device differentiates between the actual state of the switch and the the state of the current request (latch).<br>
 		<li><b>pio1 ... pio8</b></li>
 		Switch states for 8 port switches<br>
 	</ul>
